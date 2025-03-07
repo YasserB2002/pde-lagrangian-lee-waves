@@ -91,7 +91,7 @@ function model_setup(;checkpoint_name="checkpoint", Nx=250, Nz=500, H=3kilometer
     nothing #hide
 end
 
-function model_pickup(nc_save_name; Nx=250, Nz=500, H=3kilometers, Fr=0.25, N = 1e-3, k = 0.005, h₀=25meters, f = 1e-4, initial_time=5days, interval_time=1days, checkpoint_file_path=raw"checkpoint_files\model_checkpoint_weight_iteration8608.jld2")
+function model_pickup(nc_save_name; Nx=250, Nz=500, H=3kilometers, Fr=0.25, N = 1e-3, k = 0.005, h₀=25meters, f = 1e-4, initial_time=5days, interval_time=1days, do_maps = true, checkpoint_file_path=raw"checkpoint_files\model_checkpoint_weight_iteration8608.jld2")
     Nsqr = N^2
     x_range = 3 * pi / k
     U_const = N * h₀ / Fr
@@ -113,53 +113,64 @@ function model_pickup(nc_save_name; Nx=250, Nz=500, H=3kilometers, Fr=0.25, N = 
     v_forcing_eq(x, z, t, p) = p.U_const * p.coriolis.f
     v_forcing = Forcing(v_forcing_eq, parameters = (; U_const, coriolis))
 
-    # ω_c = U_const * k / 2
-    ω_c = coriolis.f
-    t_star = initial_time + (interval_time/2)
-    normalisation_const = normalisation(ω_c, interval_time)
+    if do_maps
+        ω_c = coriolis.f
+        t_star = initial_time + (interval_time/2)
+        normalisation_const = normalisation(ω_c, interval_time)
 
-    # b lagrangian mean forcing
-    b_LM_forcing_eq(x, z, t, b, p) = b * G_weight(t, p) / p.normalisation_const
-    b_LM_forcing = Forcing(b_LM_forcing_eq, parameters = (; ω_c, t_star, normalisation_const), field_dependencies=:b)
-    
-    # u lagrangian mean forcing
-    u_LM_forcing_eq(x, z, t, u, p) = u * G_weight(t, p) / p.normalisation_const
-    u_LM_forcing = Forcing(u_LM_forcing_eq, parameters = (; ω_c, t_star, U_const, normalisation_const), field_dependencies=:u)
+        # b lagrangian mean forcing
+        b_LM_forcing_eq(x, z, t, b, p) = b * G_weight(t, p) / p.normalisation_const
+        b_LM_forcing = Forcing(b_LM_forcing_eq, parameters = (; ω_c, t_star, normalisation_const), field_dependencies=:b)
+        
+        # u lagrangian mean forcing
+        u_LM_forcing_eq(x, z, t, u, p) = u * G_weight(t, p) / p.normalisation_const
+        u_LM_forcing = Forcing(u_LM_forcing_eq, parameters = (; ω_c, t_star, U_const, normalisation_const), field_dependencies=:u)
 
-    # xi maps
-    xix_forcing_eq(x, z, t, u, p) = -u * int_G_weight(t, p) / p.normalisation_const
-    xix_forcing = Forcing(xix_forcing_eq, parameters = (; ω_c, t_star, U_const, interval_time, normalisation_const), field_dependencies=:u)
-    
-    xiz_forcing_eq(x, z, t, w, p) = -w * int_G_weight(t, p) / p.normalisation_const
-    xiz_forcing = Forcing(xiz_forcing_eq, parameters = (; ω_c, t_star, U_const, interval_time, normalisation_const), field_dependencies=:w)
-    # include 1 to 3 map using heaviside function (3.16)
+        # xi maps
+        xix_forcing_eq(x, z, t, u, p) = -u * int_G_weight(t, p) / p.normalisation_const
+        xix_forcing = Forcing(xix_forcing_eq, parameters = (; ω_c, t_star, U_const, interval_time, normalisation_const), field_dependencies=:u)
+        
+        xiz_forcing_eq(x, z, t, w, p) = -w * int_G_weight(t, p) / p.normalisation_const
+        xiz_forcing = Forcing(xiz_forcing_eq, parameters = (; ω_c, t_star, U_const, interval_time, normalisation_const), field_dependencies=:w)
+    end
 
     ν_diff = κ_diff = 1
     horizontal_diffusivity = HorizontalScalarDiffusivity(ν = ν_diff, κ = κ_diff)
 
-    forcing_params = (;
-        v=v_forcing,
-        b_LM=b_LM_forcing,
-        u_LM=u_LM_forcing,
-        xix=xix_forcing,
-        xiz=xiz_forcing
-    )
+    if do_maps
+        forcing_params = (;
+            v=v_forcing,
+            b_LM=b_LM_forcing,
+            u_LM=u_LM_forcing,
+            xix=xix_forcing,
+            xiz=xiz_forcing
+        )
+        tracer_params = (:b, :b_LM, :u_LM, :xix, :xiz)
+    else
+        forcing_params = (;
+            v=v_forcing,
+        )
+        tracer_params = (:b)
+    end
 
     model = NonhydrostaticModel(;
         grid,
         coriolis = coriolis,
         buoyancy = BuoyancyTracer(),
-        tracers = (:b, :b_LM, :u_LM, :xix, :xiz),
+        tracers = tracer_params,
         closure = horizontal_diffusivity,
         forcing = forcing_params
     )
 
-    b_LMᵢ(x, z) = 0
-    u_LMᵢ(x, z) = 0
-    xixᵢ(x, z) = 0
-    xizᵢ(x, z) = 0
+    if do_maps == true
+        b_LMᵢ(x, z) = 0
+        u_LMᵢ(x, z) = 0
+        xixᵢ(x, z) = 0
+        xizᵢ(x, z) = 0
 
-    set!(model, b_LM=b_LMᵢ, u_LM=u_LMᵢ, xix=xixᵢ, xiz=xizᵢ)
+        set!(model, b_LM=b_LMᵢ, u_LM=u_LMᵢ, xix=xixᵢ, xiz=xizᵢ)
+    end
+
     set!(model, checkpoint_file_path)
     dx = max(H / Nz, 2 * x_range / Nx)
 
@@ -195,31 +206,42 @@ function model_pickup(nc_save_name; Nx=250, Nz=500, H=3kilometers, Fr=0.25, N = 
     nothing #hide
 
     b = model.tracers.b
-    b_LM = model.tracers.b_LM
-    u_LM = model.tracers.u_LM
-    xix = model.tracers.xix
-    xiz = model.tracers.xiz
+    if do_maps
+        b_LM = model.tracers.b_LM
+        u_LM = model.tracers.u_LM
+        xix = model.tracers.xix
+        xiz = model.tracers.xiz
+    end
     u, v, w = model.velocities
-
+    
     u′ = u - U_const
-    # b′ = b - Nsqr * z
 
     N² = ∂z(b)
 
     filename = nc_save_name
     save_fields_interval = 5minutes
 
-    model_dicts = Dict(
-        "u" => u, 
-        "u_pert" => u′, 
-        "w" => w,
-        "b" => b,
-        "N2" => N²,
-        "b_LM" => b_LM,
-        "u_LM" => u_LM,
-        "xix" => xix,
-        "xiz" => xiz
-    )
+    if do_maps
+        model_dicts = Dict(
+            "u" => u, 
+            "u_pert" => u′, 
+            "w" => w,
+            "b" => b,
+            "N2" => N²,
+            "b_LM" => b_LM,
+            "u_LM" => u_LM,
+            "xix" => xix,
+            "xiz" => xiz
+        )
+    else
+        model_dicts = Dict(
+            "u" => u, 
+            "u_pert" => u′, 
+            "w" => w,
+            "b" => b,
+            "N2" => N²
+        )
+    end
 
     simulation.output_writers[:fields] = NetCDFOutputWriter(
         model,
